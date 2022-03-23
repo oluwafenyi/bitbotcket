@@ -2,6 +2,7 @@ import os
 import sys
 import time
 from typing import Dict, Tuple
+from datetime import datetime
 
 import dotenv
 import requests.exceptions
@@ -16,7 +17,7 @@ dotenv.load_dotenv()
 
 BITBUCKET_USERNAME = os.environ["BITBUCKET_USERNAME"]
 BITBUCKET_APP_PASSWORD = os.environ["BITBUCKET_APP_PASSWORD"]
-BITBUCKET_WORKSPACES = os.environ["BITBUCKET_WORKSPACES"].split(",")
+BITBUCKET_WORKSPACES = os.environ["BITBUCKET_WORKSPACES"].split(",") if os.environ["BITBUCKET_WORKSPACES"] != "" else []
 SLACK_TOKEN = os.environ["SLACK_TOKEN"]
 SLACK_CHANNEL = os.environ["SLACK_CHANNEL"]
 WHEN_TO_RUN = os.environ["WHEN_TO_RUN"]
@@ -27,14 +28,10 @@ def build_comment_tree(comment_list: list) -> Comment:
     comment_map: Dict[int, Comment] = {}
 
     for comment in comment_list:
-        if comment["deleted"]:
-            continue
         c = Comment(comment["id"], comment["content"]["html"], comment["user"]["account_id"], comment["user"]["display_name"])
         comment_map[c.id_] = c
 
     for comment in comment_list:
-        if comment["deleted"]:
-            continue
         if comment.get("parent"):
             parent = comment_map[comment["parent"]["id"]]
             child = comment_map[comment["id"]]
@@ -64,21 +61,10 @@ def generate_unanswered_comments_report(unanswered_comments: Dict[str, int], use
     return text
 
 
-def main():
+def main(bit: Bitbucket, slack_client: WebClient):
+    print(f"running script: {datetime.now().strftime('%m/%d/%Y, %H:%M:%S')}")
     user_map: Dict[str, str] = {}
     unanswered_comments: Dict[str, int] = {}
-
-    bit = Bitbucket(username=BITBUCKET_USERNAME, app_password=BITBUCKET_APP_PASSWORD)
-    try:
-        bit.auth_test()
-    except (UnauthorizedBitbucketUserException, requests.exceptions.HTTPError, requests.exceptions.ConnectionError) as e:
-        print("Could not authenticate with Bitbucket:", e)
-
-    slack_client = WebClient(token=SLACK_TOKEN)
-    auth_response = slack_client.auth_test()
-    if not auth_response.data["ok"]:
-        print("Could not authenticate with slack.")
-        sys.exit(2)
 
     workspaces_ids = [ws["workspace"]["uuid"] for ws in bit.get_current_user_workspaces()] if len(BITBUCKET_WORKSPACES) == 0 else BITBUCKET_WORKSPACES
     for workspace_id in workspaces_ids:
@@ -90,12 +76,28 @@ def main():
 
     text = generate_unanswered_comments_report(unanswered_comments, user_map)
     slack_client.chat_postMessage(channel=SLACK_CHANNEL, text=text)
+    print("script ran successfully")
 
 
 if __name__ == "__main__":
+    bit = Bitbucket(username=BITBUCKET_USERNAME, app_password=BITBUCKET_APP_PASSWORD)
+    try:
+        bit.auth_test()
+    except (UnauthorizedBitbucketUserException, requests.exceptions.HTTPError, requests.exceptions.ConnectionError) as e:
+        print("Could not authenticate with Bitbucket:", e)
+        sys.exit(1)
+
+    slack_client = WebClient(token=SLACK_TOKEN)
+    auth_response = slack_client.auth_test()
+    if not auth_response.data["ok"]:
+        print("Could not authenticate with slack.")
+        sys.exit(2)
+
     schedule = SafeScheduler(minutes_after_failure=5)
-    schedule.every().day.at(WHEN_TO_RUN).do(main)
+    schedule.every().day.at(WHEN_TO_RUN).do(main, bit, slack_client)
+
+    print("running, next job scheduled for:", schedule.next_run.strftime("%m/%d/%Y, %H:%M:%S"))
 
     while True:
         schedule.run_pending()
-        time.sleep(3600)
+        time.sleep(1)
