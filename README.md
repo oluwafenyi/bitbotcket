@@ -24,7 +24,7 @@ This is a script that provides a daily report on unanswered comments in Open Bit
     * `SLACK_TOKEN`: Obtained above
     * `SLACK_CHANNEL`: Channel name where you want the bot to write updates to.
     * `WHEN_TO_RUN`: The time of day when you want the script to run in a HH:MM format. Note that the time used
-  is local to the server where this script runs.
+  is local to the server where this script runs. Docker containers are usually timed in UTC+0
 * Build and run with docker:
 `docker build -t bitbotcket:latest . && docker run -it bitbotcket:latest`
 

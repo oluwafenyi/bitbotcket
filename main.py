@@ -13,7 +13,7 @@ from comment import Comment
 from bitbucket import Bitbucket, UnauthorizedBitbucketUserException
 
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(".env")
 
 BITBUCKET_USERNAME = os.environ["BITBUCKET_USERNAME"]
 BITBUCKET_APP_PASSWORD = os.environ["BITBUCKET_APP_PASSWORD"]
@@ -94,9 +94,10 @@ if __name__ == "__main__":
         sys.exit(2)
 
     schedule = SafeScheduler(minutes_after_failure=5)
-    schedule.every().day.at(WHEN_TO_RUN).do(main, bit, slack_client)
+    schedule.every().day.at(WHEN_TO_RUN).do(main, bit=bit, slack_client=slack_client)
 
-    print("running, next job scheduled for:", schedule.next_run.strftime("%m/%d/%Y, %H:%M:%S"))
+    print(f"current date: {datetime.now().strftime('%m/%d/%Y, %H:%M:%S')}")
+    print("next job scheduled for:", schedule.next_run.strftime("%m/%d/%Y, %H:%M:%S"))
 
     while True:
         schedule.run_pending()

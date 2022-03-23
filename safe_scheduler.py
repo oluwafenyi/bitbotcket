@@ -2,8 +2,7 @@
 
 import logging
 from traceback import format_exc
-import datetime
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from schedule import Scheduler
 
@@ -41,11 +40,13 @@ class SafeScheduler(Scheduler):
                 if self.minutes_after_failure != 0 or self.seconds_after_failure != 0:
                     logger.warning("Rescheduled in %s minutes and %s seconds." % (self.minutes_after_failure, self.seconds_after_failure))
                     job.last_run = None
-                    job.next_run = datetime.datetime.now() + timedelta(minutes=self.minutes_after_failure, seconds=self.seconds_after_failure)
+                    job.next_run = datetime.now() + timedelta(minutes=self.minutes_after_failure, seconds=self.seconds_after_failure)
                 else:
                     logger.warning("Rescheduled.")
-                    job.last_run = datetime.datetime.now()
+                    job.last_run = datetime.now()
                     job._schedule_next_run()
             else:
                 logger.warning("Job canceled.")
                 self.cancel_job(job)
+        print(f"\ncurrent date: {datetime.now().strftime('%m/%d/%Y, %H:%M:%S')}")
+        print("next job scheduled for:", self.next_run.strftime("%m/%d/%Y, %H:%M:%S"))
