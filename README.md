@@ -3,20 +3,20 @@
 This is a script that provides a daily report on unanswered comments in Bitbucket PRs.
 
 ### Run Instructions
-####Getting Bitbucket Credentials:
+#### Getting Bitbucket Credentials:
 * Create a Bitbucket Bot User account (You could also use your own user account if comfortable).
 * Obtain an [app password](https://support.atlassian.com/bitbucket-cloud/docs/app-passwords/) for the account, select account:read and pull_request:read permissions for your password.
 * [Add the user](https://support.atlassian.com/bitbucket-cloud/docs/grant-access-to-a-workspace/) to your preferred workspace(s).
 * The username and app password obtained form your `BITBUCKET_USERNAME` and `BITBUCKET_APP_PASSWORD` respectively.
 
-####Getting Slack Credentials:
+#### Getting Slack Credentials:
 * Follow the instructions under `Add a bot user` on this [link](https://slack.com/help/articles/115005265703-Create-a-bot-for-your-workspace).
 * Select the Bot Features & Functionality while creating your app.
 * Review scopes and add the chat:write scope for your bot under Bot Token Scopes.
 * Install to your workspace and obtain the OAuth token given. This forms your `SLACK_TOKEN`
 * Make sure to add the installed bot to your channel of choice.
 
-####Running:
+#### Running:
 * Create a .env file in the same directory as this README using .env.sample as a template.
 * Set your
     * `BITBUCKET_USERNAME`: Obtained above
