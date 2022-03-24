@@ -21,6 +21,8 @@ BITBUCKET_WORKSPACES = os.environ["BITBUCKET_WORKSPACES"].split(",") if os.envir
 SLACK_TOKEN = os.environ["SLACK_TOKEN"]
 SLACK_CHANNEL = os.environ["SLACK_CHANNEL"]
 WHEN_TO_RUN = os.environ["WHEN_TO_RUN"]
+REPO_SLUG = os.environ["REPO_SLUG"]
+RUN_IMMEDIATELY = os.environ.get("RUN_IMMEDIATELY", None)
 
 
 def build_comment_tree(comment_list: list) -> Comment:
@@ -41,42 +43,55 @@ def build_comment_tree(comment_list: list) -> Comment:
     return base
 
 
-def find_unanswered_comments(comment_tree: Comment, unanswered_comments: dict = None, user_map: dict = None) -> Tuple[Dict[str, int], Dict[str, str]]:
+def find_unanswered_comments(comment_tree: Comment, unanswered_comments: dict = None, user_map: dict = None, comment_url: str = None) -> Tuple[Dict[str, int], Dict[str, str]]:
     comment_mentions = comment_tree.mentions
     comment_repliers = {c.creator_id: c for c in comment_tree.children.values()}
     for user_id in comment_mentions:
         if user_id not in comment_repliers:
-            unanswered_comments.setdefault(user_id, 0)
-            unanswered_comments[user_id] += 1
+            unanswered_comments.setdefault(user_id, [])
+            unanswered_comments[user_id].append(comment_url + "#comment-{}".format(comment_tree.id_))
             user_map[user_id] = comment_mentions[user_id]
     for child_id, child_comment in comment_tree.children.items():
-        find_unanswered_comments(child_comment, unanswered_comments, user_map)
+        find_unanswered_comments(child_comment, unanswered_comments, user_map, comment_url)
     return unanswered_comments, user_map
 
 
 def generate_unanswered_comments_report(unanswered_comments: Dict[str, int], user_map: Dict[str, str]):
     text = ""
-    for user_id, number_of_comments in unanswered_comments.items():
-        text += f"{user_map[user_id]} has {number_of_comments} unanswered {'comment' if number_of_comments == 1 else 'comments'}\n"
+    for user_id, unanswered in unanswered_comments.items():
+        text += f"{user_map[user_id]} has {len(unanswered)} unanswered {'comment' if unanswered == 1 else 'comments'}:"
+        text += ",".join(["<{}|{}>".format(l, i) for i, l in enumerate(unanswered)])
+        text += "\n"
+    else:
+        text += ""
     return text
 
 
 def main(bit: Bitbucket, slack_client: WebClient):
     print(f"running script: {datetime.now().strftime('%m/%d/%Y, %H:%M:%S')}")
-    user_map: Dict[str, str] = {}
-    unanswered_comments: Dict[str, int] = {}
+    user_map_combined: Dict[str, str] = {}
+    unanswered_comments: Dict[str, list] = {}
 
     workspaces_ids = [ws["workspace"]["uuid"] for ws in bit.get_current_user_workspaces()] if len(BITBUCKET_WORKSPACES) == 0 else BITBUCKET_WORKSPACES
     for workspace_id in workspaces_ids:
+        
         for repository in bit.get_repositories_from_workspace(workspace_id):
-            for pr in bit.get_pull_requests(workspace_id, repository["uuid"]):
+            if REPO_SLUG and repository['slug'] != REPO_SLUG:
+                continue
+            for pr in bit.get_pull_requests(workspace_id, repository["uuid"], state="ALL", pages=2):
                 comments = bit.get_pull_request_comments(workspace_id, repository["uuid"], pr["id"])
+                
+                user_map = {}
                 tree = build_comment_tree(comments)
-                unanswered_comments, user_map = find_unanswered_comments(tree, unanswered_comments, user_map)
+                unanswered_comments, user_map = find_unanswered_comments(tree, unanswered_comments, user_map, pr['links']['html']['href'])
+                user_map_combined.update(user_map)
+                
 
-    text = generate_unanswered_comments_report(unanswered_comments, user_map)
-    slack_client.chat_postMessage(channel=SLACK_CHANNEL, text=text)
-    print("script ran successfully")
+    text = generate_unanswered_comments_report(unanswered_comments, user_map_combined)
+
+    if text:
+        slack_client.chat_postMessage(channel=SLACK_CHANNEL, blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}]) 
+    print("script ran successfully. output was: \n", text)
 
 
 if __name__ == "__main__":
@@ -92,13 +107,17 @@ if __name__ == "__main__":
     if not auth_response.data["ok"]:
         print("Could not authenticate with slack.")
         sys.exit(2)
+    
+    if RUN_IMMEDIATELY:
+        main(bit=bit, slack_client=slack_client)
+    else:
+        schedule = SafeScheduler(minutes_after_failure=5)
+        schedule.every().day.at(WHEN_TO_RUN).do(main, bit=bit, slack_client=slack_client)
 
-    schedule = SafeScheduler(minutes_after_failure=5)
-    schedule.every().day.at(WHEN_TO_RUN).do(main, bit=bit, slack_client=slack_client)
+        print(f"current date: {datetime.now().strftime('%m/%d/%Y, %H:%M:%S')}")
+        print("next job scheduled for:", schedule.next_run.strftime("%m/%d/%Y, %H:%M:%S"))
 
-    print(f"current date: {datetime.now().strftime('%m/%d/%Y, %H:%M:%S')}")
-    print("next job scheduled for:", schedule.next_run.strftime("%m/%d/%Y, %H:%M:%S"))
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
 
-    while True:
-        schedule.run_pending()
-        time.sleep(1)

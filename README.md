@@ -24,6 +24,7 @@ This is a script that provides a daily report on unanswered comments in Open Bit
     * `SLACK_TOKEN`: Obtained above
     * `SLACK_CHANNEL`: Channel name where you want the bot to write updates to.
     * `WHEN_TO_RUN`: The time of day when you want the script to run in a HH:MM format. Note that the time used
+    * `RUN_IMMEDIATELY`: Set this to anything to disable scheduling and run the script right away (for testing)
   is local to the server where this script runs. Docker containers are usually timed in UTC+0
 * Build and run with docker:
 `docker build -t bitbotcket:latest . && docker run -it bitbotcket:latest`
@@ -32,3 +33,4 @@ This is a script that provides a daily report on unanswered comments in Open Bit
 * By default, the bitbucket bot user will target all repositories in all workspaces it has access to. You can limit the workspaces by setting
 the env var `BITBUCKET_WORKSPACES` which is a comma separated list of Workspace IDs. The bot user must have access
 to these workspaces.
+* You can also use `REPO_SLUG` to restrict to a specific repo by slug, instead of all repositories.

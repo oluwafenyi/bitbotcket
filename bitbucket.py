@@ -37,7 +37,7 @@ class Bitbucket:
             raise
         return response
 
-    def _request_iter(self, path: str, param: str = "values", batch: int = 50, query_params: dict = None):
+    def _request_iter(self, path: str, param: str = "values", batch: int = 50, query_params: dict = None, pages: int = 1E15):
         if query_params is not None:
             query_string = _generate_query_params({**query_params, "page": "1", "pagelen": str(batch)})
         else:
@@ -48,7 +48,7 @@ class Bitbucket:
             yield resource
 
         size = json_response["size"]
-        remaining_number_of_pages = math.ceil(size / batch)
+        remaining_number_of_pages = min(pages, math.ceil(size / batch))
         for i in range(2, remaining_number_of_pages + 1):
             query_string = _generate_query_params({"page": str(i), "pagelen": str(batch)})
             response = self._request("GET", path + query_string)
@@ -56,9 +56,9 @@ class Bitbucket:
             for resource in json_response[param]:
                 yield resource
 
-    def _get_resources(self, path: str, query_params: dict = None) -> list:
+    def _get_resources(self, path: str, query_params: dict = None, batch: int = 50, pages: int = 1E15) -> list:
         resources = []
-        for resource in self._request_iter(path, query_params=query_params):
+        for resource in self._request_iter(path, query_params=query_params, batch=batch, pages=pages):
             resources.append(resource)
         return resources
 
@@ -71,11 +71,12 @@ class Bitbucket:
     def get_repositories_from_workspace(self, workspace_id: str) -> list:
         return self._get_resources(f"/2.0/repositories/{workspace_id}")
 
-    def get_pull_requests(self, workspace_id: str, repository_slug: str, state: str = None) -> list:
-        query_params = None
+    def get_pull_requests(self, workspace_id: str, repository_slug: str, state: str = None, pages: int = 1) -> list:
+        query_params = {}
         if state is not None:
             query_params = {"state": state}
-        return self._get_resources(f"/2.0/repositories/{workspace_id}/{repository_slug}/pullrequests", query_params)
+
+        return self._get_resources(f"/2.0/repositories/{workspace_id}/{repository_slug}/pullrequests", query_params, batch=50, pages=pages)
 
     def get_pull_request_comments(self, workspace_id: str, repository_slug: str, pull_request_id: str) -> list:
         return self._get_resources(f"/2.0/repositories/{workspace_id}/{repository_slug}/pullrequests/{pull_request_id}/comments")
