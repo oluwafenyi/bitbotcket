@@ -2,7 +2,7 @@ import os
 import sys
 import time
 from typing import Dict, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import dotenv
 import requests.exceptions
@@ -21,8 +21,11 @@ BITBUCKET_WORKSPACES = os.environ["BITBUCKET_WORKSPACES"].split(",") if os.envir
 SLACK_TOKEN = os.environ["SLACK_TOKEN"]
 SLACK_CHANNEL = os.environ["SLACK_CHANNEL"]
 WHEN_TO_RUN = os.environ["WHEN_TO_RUN"]
-REPO_SLUG = os.environ["REPO_SLUG"]
+REPO_SLUG = os.environ.get("REPO_SLUG", None)
 RUN_IMMEDIATELY = os.environ.get("RUN_IMMEDIATELY", None)
+PR_MAX_AGE_DAYS = os.environ.get("PR_MAX_AGE", "30")
+
+DAYS_AGO = (datetime.now() - timedelta(days=int(PR_MAX_AGE_DAYS))).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def build_comment_tree(comment_list: list) -> Comment:
@@ -59,8 +62,8 @@ def find_unanswered_comments(comment_tree: Comment, unanswered_comments: dict = 
 def generate_unanswered_comments_report(unanswered_comments: Dict[str, int], user_map: Dict[str, str]):
     text = ""
     for user_id, unanswered in unanswered_comments.items():
-        text += f"{user_map[user_id]} has {len(unanswered)} unanswered {'comment' if unanswered == 1 else 'comments'}:"
-        text += ",".join(["<{}|{}>".format(l, i) for i, l in enumerate(unanswered)])
+        text += f"{user_map[user_id]} has {len(unanswered)} unanswered {'comment' if unanswered == 1 else 'comments'}: "
+        text += ",".join(["<{}|{}>".format(l, i + 1) for i, l in enumerate(unanswered)])
         text += "\n"
     else:
         text += ""
@@ -78,19 +81,19 @@ def main(bit: Bitbucket, slack_client: WebClient):
         for repository in bit.get_repositories_from_workspace(workspace_id):
             if REPO_SLUG and repository['slug'] != REPO_SLUG:
                 continue
-            for pr in bit.get_pull_requests(workspace_id, repository["uuid"], state="ALL", pages=2):
+            for pr in bit.get_pull_requests(workspace_id, repository["uuid"], state="ALL", query=f"created_on>={DAYS_AGO.isoformat()}"):
                 comments = bit.get_pull_request_comments(workspace_id, repository["uuid"], pr["id"])
                 
                 user_map = {}
                 tree = build_comment_tree(comments)
                 unanswered_comments, user_map = find_unanswered_comments(tree, unanswered_comments, user_map, pr['links']['html']['href'])
                 user_map_combined.update(user_map)
-                
+
 
     text = generate_unanswered_comments_report(unanswered_comments, user_map_combined)
 
     if text:
-        slack_client.chat_postMessage(channel=SLACK_CHANNEL, blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}]) 
+        slack_client.chat_postMessage(channel=SLACK_CHANNEL, text=text, blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}])
     print("script ran successfully. output was: \n", text)
 
 

@@ -34,3 +34,4 @@ This is a script that provides a daily report on unanswered comments in Open Bit
 the env var `BITBUCKET_WORKSPACES` which is a comma separated list of Workspace IDs. The bot user must have access
 to these workspaces.
 * You can also use `REPO_SLUG` to restrict to a specific repo by slug, instead of all repositories.
+* You can use `PR_MAX_AGE_DAYS` to restrict to pull requests created within the last x days. An integer value is expected. Default is 30.
