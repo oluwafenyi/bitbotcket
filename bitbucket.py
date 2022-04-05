@@ -71,10 +71,12 @@ class Bitbucket:
     def get_repositories_from_workspace(self, workspace_id: str) -> list:
         return self._get_resources(f"/2.0/repositories/{workspace_id}")
 
-    def get_pull_requests(self, workspace_id: str, repository_slug: str, state: str = None, pages: int = 1) -> list:
+    def get_pull_requests(self, workspace_id: str, repository_slug: str, state: str = None, query: str = None, pages: int = 1) -> list:
         query_params = {}
         if state is not None:
             query_params = {"state": state}
+        if query:
+            query_params["q"] = query
 
         return self._get_resources(f"/2.0/repositories/{workspace_id}/{repository_slug}/pullrequests", query_params, batch=50, pages=pages)
 

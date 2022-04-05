@@ -1,8 +1,8 @@
 import os
 import sys
 import time
-from typing import Dict, Tuple
-from datetime import datetime
+from typing import Dict, Tuple, List, Set
+from datetime import datetime, timedelta
 
 import dotenv
 import requests.exceptions
@@ -21,11 +21,19 @@ BITBUCKET_WORKSPACES = os.environ["BITBUCKET_WORKSPACES"].split(",") if os.envir
 SLACK_TOKEN = os.environ["SLACK_TOKEN"]
 SLACK_CHANNEL = os.environ["SLACK_CHANNEL"]
 WHEN_TO_RUN = os.environ["WHEN_TO_RUN"]
-REPO_SLUG = os.environ["REPO_SLUG"]
+REPO_SLUG = os.environ.get("REPO_SLUG", None)
 RUN_IMMEDIATELY = os.environ.get("RUN_IMMEDIATELY", None)
+PR_MAX_AGE_DAYS = os.environ.get("PR_MAX_AGE", "30")
+
+DAYS_AGO = (datetime.now() - timedelta(days=int(PR_MAX_AGE_DAYS))).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def build_comment_tree(comment_list: list) -> Comment:
+    """
+    :param comment_list: comment data as gotten from the bitbucket pr comments API
+    :returns: comments structured into a Comment object
+    """
+
     base = Comment(0)
     comment_map: Dict[int, Comment] = {}
 
@@ -43,34 +51,82 @@ def build_comment_tree(comment_list: list) -> Comment:
     return base
 
 
-def find_unanswered_comments(comment_tree: Comment, unanswered_comments: dict = None, user_map: dict = None, comment_url: str = None) -> Tuple[Dict[str, int], Dict[str, str]]:
-    comment_mentions = comment_tree.mentions
-    comment_repliers = {c.creator_id: c for c in comment_tree.children.values()}
-    for user_id in comment_mentions:
-        if user_id not in comment_repliers:
-            unanswered_comments.setdefault(user_id, [])
-            unanswered_comments[user_id].append(comment_url + "#comment-{}".format(comment_tree.id_))
-            user_map[user_id] = comment_mentions[user_id]
-    for child_id, child_comment in comment_tree.children.items():
-        find_unanswered_comments(child_comment, unanswered_comments, user_map, comment_url)
-    return unanswered_comments, user_map
+def find_pull_request_metrics(comment_tree: Comment, comment_url: str = None, author_id: str = None) -> Tuple[Dict[str, List[str]], Dict[str, str], Set[str], bool]:
+    """
+    :param comment_tree: pull request comment tree representation
+    :param comment_url: base_url for pull request
+    :returns: tuple[dict=user_map, dict_unanswered_comments, set=participators, bool=author_commented]
+    """
+
+    user_map = {}  # map of user account_id to Display Name
+    unanswered_comments = {}  # map of user account_id to list of comments(urls) they have been mentioned in but did not reply
+    participators = set()  # set of comment participators that got a reply
+    stack = [comment_tree]
+    author_commented = False
+
+    while len(stack) > 0:
+        comment = stack.pop(0)
+        if comment.id_ != 0 and comment.children:
+            participators.add(comment.creator_id)
+
+        if not author_commented and comment.creator_id == author_id:
+            author_commented = True
+
+        comment_mentions = comment.mentions
+        comment_repliers = {c.creator_id: c for c in comment.children.values()}
+        for user_id in comment_mentions:
+            if user_id not in comment_repliers:
+                unanswered_comments.setdefault(user_id, [])
+                unanswered_comments[user_id].append(comment_url + "#comment-{}".format(comment.id_))
+                user_map[user_id] = comment_mentions[user_id]
+        for child_comment in comment.children.values():
+            stack.append(child_comment)
+
+    return unanswered_comments, user_map, participators, author_commented
 
 
-def generate_unanswered_comments_report(unanswered_comments: Dict[str, int], user_map: Dict[str, str]):
+def generate_report(unanswered_comments: Dict[str, List[str]], user_map: Dict[str, str], participation: Dict[str, int], author_participation: Dict[str, bool]) -> str:
+    """
+    :param unanswered_comments:
+    :param user_map:
+    :param participation:
+    :param author_participation:
+    :returns: metrics reported in Markdown text
+    """
+
     text = ""
     for user_id, unanswered in unanswered_comments.items():
-        text += f"{user_map[user_id]} has {len(unanswered)} unanswered {'comment' if unanswered == 1 else 'comments'}:"
-        text += ",".join(["<{}|{}>".format(l, i) for i, l in enumerate(unanswered)])
+        text += f"{user_map[user_id]} has {len(unanswered)} unanswered {'comment' if len(unanswered) == 1 else 'comments'}: "
+        text += ",".join(["<{}|{}>".format(l, i + 1) for i, l in enumerate(unanswered)])
         text += "\n"
     else:
         text += ""
+
+    text += "\n"
+
+    max_participation = max(participation.values())
+    for user_id, prs_participated_in in participation.items():
+        text += f"{user_map[user_id]} engaged a conversation in {prs_participated_in} {'PR' if prs_participated_in == 1 else 'PRs'}"
+        if prs_participated_in == max_participation:
+            text += " (winner)"
+        text += "\n"
+    else:
+        text += ""
+
+    text += "\n"
+
+    if any(not p for p in author_participation.values()):
+        text += f"The following users did not comment on any PR: {', '.join(user_map[u] for u, participated in author_participation.items() if not participated)}\n"
+
     return text
 
 
 def main(bit: Bitbucket, slack_client: WebClient):
     print(f"running script: {datetime.now().strftime('%m/%d/%Y, %H:%M:%S')}")
     user_map_combined: Dict[str, str] = {}
-    unanswered_comments: Dict[str, list] = {}
+    unanswered_comments_combined: Dict[str, List[str]] = {}
+    participation: Dict[str, int] = {}
+    author_participation: Dict[str, bool] = {}
 
     workspaces_ids = [ws["workspace"]["uuid"] for ws in bit.get_current_user_workspaces()] if len(BITBUCKET_WORKSPACES) == 0 else BITBUCKET_WORKSPACES
     for workspace_id in workspaces_ids:
@@ -78,19 +134,30 @@ def main(bit: Bitbucket, slack_client: WebClient):
         for repository in bit.get_repositories_from_workspace(workspace_id):
             if REPO_SLUG and repository['slug'] != REPO_SLUG:
                 continue
-            for pr in bit.get_pull_requests(workspace_id, repository["uuid"], state="ALL", pages=2):
-                comments = bit.get_pull_request_comments(workspace_id, repository["uuid"], pr["id"])
-                
-                user_map = {}
-                tree = build_comment_tree(comments)
-                unanswered_comments, user_map = find_unanswered_comments(tree, unanswered_comments, user_map, pr['links']['html']['href'])
-                user_map_combined.update(user_map)
-                
+            for pr in bit.get_pull_requests(workspace_id, repository["uuid"], state="ALL", query=f"created_on>={DAYS_AGO.isoformat()}"):
+                author_id = pr["author"]["account_id"]
+                author_display_name = pr["author"]["display_name"]
+                user_map_combined[author_id] = author_display_name
 
-    text = generate_unanswered_comments_report(unanswered_comments, user_map_combined)
+                comments = bit.get_pull_request_comments(workspace_id, repository["uuid"], pr["id"])
+                tree = build_comment_tree(comments)
+
+                unanswered_comments, user_map, participators, author_commented = find_pull_request_metrics(comment_tree=tree, comment_url=pr['links']['html']['href'], author_id=author_id)
+                user_map_combined.update(user_map)
+                unanswered_comments_combined.update(unanswered_comments)
+                for participator in participators:
+                    participation.setdefault(participator, 0)
+                    participation[participator] += 1
+
+                if not author_commented and author_id not in author_participation:
+                    author_participation[author_id] = False
+                elif author_commented and author_id in author_participation:
+                    author_participation[author_id] = True
+
+    text = generate_report(unanswered_comments_combined, user_map_combined, participation, author_participation)
 
     if text:
-        slack_client.chat_postMessage(channel=SLACK_CHANNEL, blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}]) 
+        slack_client.chat_postMessage(channel=SLACK_CHANNEL, text=text, blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}])
     print("script ran successfully. output was: \n", text)
 
 
