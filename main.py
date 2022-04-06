@@ -51,29 +51,31 @@ def build_comment_tree(comment_list: list) -> Comment:
     return base
 
 
-def find_pull_request_metrics(comment_tree: Comment, comment_url: str = None, author_id: str = None) -> Tuple[Dict[str, List[str]], Dict[str, str], Set[str], bool]:
+def find_pull_request_metrics(comment_tree: Comment, comment_url: str = None) -> Tuple[Dict[str, List[str]], Dict[str, str], Set[str], Set[str]]:
     """
     :param comment_tree: pull request comment tree representation
     :param comment_url: base_url for pull request
-    :returns: tuple[dict=user_map, dict_unanswered_comments, set=participators, bool=author_commented]
+    :returns: tuple[dict=user_map, dict_unanswered_comments, set=participators, set=commenter_makers]
     """
 
     user_map = {}  # map of user account_id to Display Name
     unanswered_comments = {}  # map of user account_id to list of comments(urls) they have been mentioned in but did not reply
-    participators = set()  # set of comment participators that got a reply
+    participators = set()  # set of comment participators that got a reply from someone that isn't them
     stack = [comment_tree]
-    author_commented = False
+    comment_makers = set()
 
     while len(stack) > 0:
         comment = stack.pop(0)
-        if comment.id_ != 0 and comment.children:
-            participators.add(comment.creator_id)
-
-        if not author_commented and comment.creator_id == author_id:
-            author_commented = True
-
         comment_mentions = comment.mentions
         comment_repliers = {c.creator_id: c for c in comment.children.values()}
+
+        if comment.id_ != 0:
+            comment_makers.add(comment.creator_id)
+            if len(comment_repliers) > 1:
+                participators.add(comment.creator_id)
+            elif len(comment_repliers) == 1 and comment.creator_id not in comment_repliers:
+                participators.add(comment.creator_id)
+
         for user_id in comment_mentions:
             if user_id not in comment_repliers:
                 unanswered_comments.setdefault(user_id, [])
@@ -82,10 +84,10 @@ def find_pull_request_metrics(comment_tree: Comment, comment_url: str = None, au
         for child_comment in comment.children.values():
             stack.append(child_comment)
 
-    return unanswered_comments, user_map, participators, author_commented
+    return unanswered_comments, user_map, participators, comment_makers
 
 
-def generate_report(unanswered_comments: Dict[str, List[str]], user_map: Dict[str, str], participation: Dict[str, int], author_participation: Dict[str, bool]) -> str:
+def generate_report(unanswered_comments: Dict[str, List[str]], user_map: Dict[str, str], participation: Dict[str, int], pr_authors: Set[str], comment_makers_combined: Set[str]) -> str:
     """
     :param unanswered_comments:
     :param user_map:
@@ -104,7 +106,7 @@ def generate_report(unanswered_comments: Dict[str, List[str]], user_map: Dict[st
 
     text += "\n"
 
-    max_participation = max(participation.values())
+    max_participation = max(participation.values() or [0])
     for user_id, prs_participated_in in participation.items():
         text += f"{user_map[user_id]} engaged a conversation in {prs_participated_in} {'PR' if prs_participated_in == 1 else 'PRs'}"
         if prs_participated_in == max_participation:
@@ -115,9 +117,9 @@ def generate_report(unanswered_comments: Dict[str, List[str]], user_map: Dict[st
 
     text += "\n"
 
-    if any(not p for p in author_participation.values()):
-        text += f"The following users did not comment on any PR: {', '.join(user_map[u] for u, participated in author_participation.items() if not participated)}\n"
-
+    non_participating_authors = pr_authors.difference(comment_makers_combined)
+    if len(non_participating_authors) > 0:
+        text += f"The following users did not comment on any PR: {', '.join(user_map[a] for a in non_participating_authors)}\n"
     return text
 
 
@@ -126,7 +128,8 @@ def main(bit: Bitbucket, slack_client: WebClient):
     user_map_combined: Dict[str, str] = {}
     unanswered_comments_combined: Dict[str, List[str]] = {}
     participation: Dict[str, int] = {}
-    author_participation: Dict[str, bool] = {}
+    pr_authors: Set[str] = set()
+    comment_makers_combined: Set[str] = set()
 
     workspaces_ids = [ws["workspace"]["uuid"] for ws in bit.get_current_user_workspaces()] if len(BITBUCKET_WORKSPACES) == 0 else BITBUCKET_WORKSPACES
     for workspace_id in workspaces_ids:
@@ -138,23 +141,20 @@ def main(bit: Bitbucket, slack_client: WebClient):
                 author_id = pr["author"]["account_id"]
                 author_display_name = pr["author"]["display_name"]
                 user_map_combined[author_id] = author_display_name
+                pr_authors.add(author_id)
 
                 comments = bit.get_pull_request_comments(workspace_id, repository["uuid"], pr["id"])
                 tree = build_comment_tree(comments)
 
-                unanswered_comments, user_map, participators, author_commented = find_pull_request_metrics(comment_tree=tree, comment_url=pr['links']['html']['href'], author_id=author_id)
+                unanswered_comments, user_map, participators, comment_makers = find_pull_request_metrics(comment_tree=tree, comment_url=pr['links']['html']['href'])
                 user_map_combined.update(user_map)
                 unanswered_comments_combined.update(unanswered_comments)
                 for participator in participators:
                     participation.setdefault(participator, 0)
                     participation[participator] += 1
+                comment_makers_combined.update(comment_makers)
 
-                if not author_commented and author_id not in author_participation:
-                    author_participation[author_id] = False
-                elif author_commented and author_id in author_participation:
-                    author_participation[author_id] = True
-
-    text = generate_report(unanswered_comments_combined, user_map_combined, participation, author_participation)
+    text = generate_report(unanswered_comments_combined, user_map_combined, participation, pr_authors, comment_makers_combined)
 
     if text:
         slack_client.chat_postMessage(channel=SLACK_CHANNEL, text=text, blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}])
